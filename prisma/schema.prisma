@@ -1,0 +1,180 @@
+// Verora API database. The chain is the source of truth: agent, query, and staking rows are an
+// index of on-chain state built by the indexer. Wei amounts are stored as Decimal(78, 0).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Agent {
+  id                String    @id // bytes32 agent ID, lowercase hex
+  owner             String // lowercase address
+  endpoint          String
+  capabilities      String[]  @default([])
+  metadataUri       String    @map("metadata_uri")
+  status            String // active | suspended | slashed
+  adminSuspended    Boolean   @default(false) @map("admin_suspended")
+  registeredAt      DateTime  @map("registered_at")
+  reputation        Int       @default(5000) // 0 - 10000 basis points
+  totalQueries      Int       @default(0) @map("total_queries")
+  successfulQueries Int       @default(0) @map("successful_queries")
+  failedQueries     Int       @default(0) @map("failed_queries")
+  totalStake        Decimal   @default(0) @map("total_stake") @db.Decimal(78, 0)
+  stakerCount       Int       @default(0) @map("staker_count")
+  metadata          Json?
+  metadataFetchedAt DateTime? @map("metadata_fetched_at")
+  metadataError     String?   @map("metadata_error")
+  // Failed resolutions are retried with exponential backoff until metadataRetryAt is cleared
+  metadataAttempts  Int       @default(0) @map("metadata_attempts")
+  metadataRetryAt   DateTime? @map("metadata_retry_at")
+  healthStatus      String    @default("unknown") @map("health_status") // unknown | healthy | unhealthy
+  healthCheckedAt   DateTime? @map("health_checked_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  responses QueryResponse[]
+
+  @@index([owner])
+  @@index([status, reputation])
+  @@map("agents")
+}
+
+model Query {
+  id               String    @id // bytes32 query ID, lowercase hex
+  requester        String
+  queryType        String    @map("query_type")
+  queryData        String    @map("query_data") // hex
+  status           String // pending | in_progress | completed | failed
+  cancelled        Boolean   @default(false)
+  payment          Decimal   @db.Decimal(78, 0)
+  deadline         DateTime
+  assignedAgents   String[]  @map("assigned_agents")
+  aggregatedResult String?   @map("aggregated_result") // hex
+  createdAt        DateTime  @map("created_at")
+  finalizedAt      DateTime? @map("finalized_at")
+  txHash           String    @map("tx_hash")
+  blockNumber      BigInt    @map("block_number")
+  // Oracle processing state, persisted so work resumes after restarts
+  oracleState      String    @default("dispatching") @map("oracle_state") // dispatching | settling | done
+  oracleError      String?   @map("oracle_error")
+  // Settlement backoff, so a query that keeps failing to settle never starves the others
+  settleAttempts   Int       @default(0) @map("settle_attempts")
+  nextSettleAt     DateTime  @default(now()) @map("next_settle_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  responses  QueryResponse[]
+  dispatches QueryDispatch[]
+
+  @@index([requester, createdAt])
+  @@index([status])
+  @@index([oracleState, nextSettleAt])
+  @@map("queries")
+}
+
+model QueryResponse {
+  queryId      String   @map("query_id")
+  agentId      String   @map("agent_id")
+  responseData String   @map("response_data") // hex
+  submittedAt  DateTime @map("submitted_at")
+  txHash       String   @map("tx_hash")
+
+  query Query @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([queryId, agentId])
+  @@index([agentId])
+  @@map("query_responses")
+}
+
+/// Oracle delivery attempts per (query, agent)
+model QueryDispatch {
+  queryId       String   @map("query_id")
+  agentId       String   @map("agent_id")
+  status        String   @default("pending") // pending | relayed | failed
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
+  lastError     String?  @map("last_error")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  query Query @relation(fields: [queryId], references: [id], onDelete: Cascade)
+
+  @@id([queryId, agentId])
+  @@index([status, nextAttemptAt])
+  @@map("query_dispatches")
+}
+
+model StakingEvent {
+  id          String   @id // txHash:logIndex
+  agentId     String   @map("agent_id")
+  staker      String?
+  kind        String // staked | unstaked | withdrawn | slashed | rewards_distributed | rewards_claimed
+  amount      Decimal  @db.Decimal(78, 0)
+  blockNumber BigInt   @map("block_number")
+  timestamp   DateTime
+
+  @@index([agentId, kind, timestamp])
+  @@index([staker])
+  @@map("staking_events")
+}
+
+model Payment {
+  id          String   @id // txHash:logIndex
+  queryId     String   @map("query_id")
+  agentId     String   @map("agent_id")
+  payee       String
+  amount      Decimal  @db.Decimal(78, 0)
+  blockNumber BigInt   @map("block_number")
+  timestamp   DateTime
+
+  @@index([agentId])
+  @@index([payee])
+  @@map("payments")
+}
+
+model IndexerState {
+  id        String   @id
+  lastBlock BigInt   @map("last_block")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("indexer_state")
+}
+
+model AuthNonce {
+  nonce     String   @id
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("auth_nonces")
+}
+
+/// Agent metadata documents hosted by the API, content-addressed by SHA-256
+model MetadataDocument {
+  id         String   @id
+  owner      String
+  content    Json
+  createdAt  DateTime @default(now()) @map("created_at")
+  // Refreshed when the same content is stored again; garbage collection only removes stale, unreferenced rows
+  lastUsedAt DateTime @default(now()) @map("last_used_at")
+
+  @@index([owner])
+  @@map("metadata_documents")
+}
+
+/// Images referenced by metadata documents, content-addressed by SHA-256
+model Asset {
+  id         String   @id
+  owner      String
+  mimeType   String   @map("mime_type")
+  size       Int
+  data       Bytes
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastUsedAt DateTime @default(now()) @map("last_used_at")
+
+  @@index([owner])
+  @@map("assets")
+}

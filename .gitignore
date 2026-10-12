@@ -1,0 +1,73 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & Secrets - CRITICAL
+.env
+.env.*
+.env.local
+.env.*.local
+*.env
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Credentials
+credentials.json
+credentials.yaml
+secrets.json
+secrets.yaml
+service-account*.json
+firebase-adminsdk*.json
+
+# Testing
+coverage/
+.nyc_output/
+test-results/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Misc
+.vercel
+.turbo
+.cache/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+
+/generated/prisma
+!.env.example
+*.tsbuildinfo
