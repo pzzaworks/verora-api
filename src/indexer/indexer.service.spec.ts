@@ -108,7 +108,7 @@ describe('IndexerService.indexUnsafeQueries', () => {
     await service.indexUnsafeQueries();
 
     expect(getLogs).toHaveBeenCalledWith(
-      expect.objectContaining({ fromBlock: 101n, toBlock: 105n }),
+      expect.objectContaining({ fromBlock: 101n, toBlock: 'latest' }),
     );
     expect(prisma.query.upsert).toHaveBeenCalledTimes(1);
     expect(prisma.query.upsert.mock.calls[0]?.[0]).toMatchObject({

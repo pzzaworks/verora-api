@@ -127,14 +127,12 @@ export class IndexerService implements OnApplicationBootstrap, OnModuleDestroy {
    */
   async indexUnsafeQueries(): Promise<void> {
     if (this.status.lastIndexedBlock === null) return;
-    const fromBlock = BigInt(this.status.lastIndexedBlock) + 1n;
-    const head = await this.chain.publicClient.getBlockNumber();
-    if (head < fromBlock) return;
-
+    // `latest` instead of a block number read beforehand: behind a load-balanced RPC the node serving the
+    // logs can be a block behind the one that reported the head, and would reject a range past its own
     const rawLogs = await this.chain.publicClient.getLogs({
       address: this.chain.addresses.queryConsumer,
-      fromBlock,
-      toBlock: head,
+      fromBlock: BigInt(this.status.lastIndexedBlock) + 1n,
+      toBlock: 'latest',
     });
     const created = parseEventLogs({
       abi: queryConsumerAbi,
@@ -150,7 +148,8 @@ export class IndexerService implements OnApplicationBootstrap, OnModuleDestroy {
     const knownIds = new Set(known.map((query) => query.id));
     for (const log of created) {
       if (knownIds.has(log.args.queryId.toLowerCase())) continue;
-      await this.syncQuery(log.args.queryId, head, log.transactionHash, log.blockNumber);
+      // Read at the creation block, which the node that returned the log is known to have
+      await this.syncQuery(log.args.queryId, log.blockNumber, log.transactionHash, log.blockNumber);
       this.logger.log(`Picked up query ${log.args.queryId} from unsafe block ${log.blockNumber}`);
     }
   }
