@@ -54,7 +54,7 @@ pnpm test        # Unit tests
 | `PORT` | `4100` | HTTP port. |
 | `DATABASE_URL` | required | Postgres connection string. |
 | `CHAIN` | required | `sepolia` (Ethereum Sepolia, chain 11155111) or `foundry` (local Anvil). |
-| `RPC_URL` | required | HTTP(S) or WS(S) RPC endpoint for the chain. |
+| `RPC_URL` | required | Comma-separated HTTP(S) RPC endpoints, used one at a time and failed over in order when the active one stops answering (no background probing), or a single WS(S) endpoint. |
 | `AGENT_REGISTRY_ADDRESS`, `QUERY_CONSUMER_ADDRESS`, `STAKING_POOL_ADDRESS`, `REPUTATION_MANAGER_ADDRESS`, `PAYMENT_ROUTER_ADDRESS` | required | Contract addresses from `verora-contracts/deployments/<chainId>.json`. |
 | `START_BLOCK` | `0` | Deployment block; the indexer starts here on an empty database. |
 | `CONFIRMATIONS` | `3` | Extra blocks kept behind the head the indexer follows (`safe` on Sepolia, latest on Anvil). |

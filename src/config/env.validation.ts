@@ -1,5 +1,6 @@
 import { plainToInstance, Transform } from 'class-transformer';
 import {
+  ArrayNotEmpty,
   IsBoolean,
   IsEthereumAddress,
   IsIn,
@@ -49,8 +50,14 @@ export class EnvironmentVariables {
   @IsIn(SUPPORTED_CHAINS)
   CHAIN!: SupportedChain;
 
-  @IsUrl({ require_tld: false, protocols: ['http', 'https', 'ws', 'wss'] })
-  RPC_URL!: string;
+  /**
+   * Comma-separated HTTP(S) endpoints, used one at a time and failed over in order when the active one
+   * stops answering (see chain/failover-transport.ts), or a single WS(S) endpoint
+   */
+  @Transform(toList)
+  @ArrayNotEmpty()
+  @IsUrl({ require_tld: false, protocols: ['http', 'https', 'ws', 'wss'] }, { each: true })
+  RPC_URL!: string[];
 
   @IsEthereumAddress()
   AGENT_REGISTRY_ADDRESS!: string;

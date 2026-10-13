@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import {
   createPublicClient,
   createWalletClient,
-  http,
   webSocket,
   type Account,
   type Address,
@@ -15,6 +14,7 @@ import {
 } from 'viem';
 import { nonceManager, privateKeyToAccount } from 'viem/accounts';
 import { foundry, sepolia } from 'viem/chains';
+import { failover } from './failover-transport.js';
 import type { EnvironmentVariables, SupportedChain } from '../config/env.validation.js';
 
 interface ChainProfile {
@@ -62,10 +62,18 @@ export class ChainService {
     this.chain = profile.chain;
     this.headTag = profile.headTag;
 
-    const rpcUrl = config.get('RPC_URL', { infer: true });
-    const transport = rpcUrl.startsWith('ws')
-      ? webSocket(rpcUrl)
-      : http(rpcUrl, { retryCount: 3, timeout: 15_000 });
+    const rpcUrls = config.get('RPC_URL', { infer: true });
+    const websocket = rpcUrls.some((url) => url.startsWith('ws'));
+    if (websocket && rpcUrls.length > 1) {
+      throw new Error('RPC_URL takes either one WS(S) endpoint or a list of HTTP(S) endpoints');
+    }
+    const transport = websocket
+      ? webSocket(rpcUrls[0])
+      : failover(rpcUrls, {
+          timeout: 15_000,
+          onSwitch: (from, to, reason) =>
+            this.logger.warn(`RPC ${from} failed (${reason}), switched to ${to}`),
+        });
 
     this.publicClient = createPublicClient({ chain: this.chain, transport });
     this.addresses = {
