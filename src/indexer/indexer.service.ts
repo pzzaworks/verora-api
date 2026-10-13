@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
-import { parseEventLogs, type Hex } from 'viem';
+import { BaseError, ContractFunctionRevertedError, parseEventLogs, type Hex } from 'viem';
 import {
   agentRegistryAbi,
   paymentRouterAbi,
@@ -110,12 +110,86 @@ export class IndexerService implements OnApplicationBootstrap, OnModuleDestroy {
       const caughtUp = await this.indexNextRange();
       if (!caughtUp) delay = 0;
       this.status.lastErrorKind = null;
+      if (caughtUp) await this.indexUnsafeQueries();
     } catch (error) {
       delay = ERROR_BACKOFF_MS;
       this.status.lastErrorKind = errorKind(error);
       this.logger.error(`Indexing failed: ${describeError(error)}`);
     }
     this.schedule(delay);
+  }
+
+  /**
+   * Mirrors queries created above the safe head, so the oracle dispatches them right away instead of
+   * after the safe-head lag (over 10 minutes on Sepolia at times, longer than a short query lives).
+   * Only query creation is picked up this early; everything else waits for the safe head, and
+   * `pruneReorgedQueries` drops a query whose block the safe chain replaced.
+   */
+  async indexUnsafeQueries(): Promise<void> {
+    if (this.status.lastIndexedBlock === null) return;
+    const fromBlock = BigInt(this.status.lastIndexedBlock) + 1n;
+    const head = await this.chain.publicClient.getBlockNumber();
+    if (head < fromBlock) return;
+
+    const rawLogs = await this.chain.publicClient.getLogs({
+      address: this.chain.addresses.queryConsumer,
+      fromBlock,
+      toBlock: head,
+    });
+    const created = parseEventLogs({
+      abi: queryConsumerAbi,
+      logs: rawLogs,
+      eventName: 'QueryCreated',
+    });
+    if (created.length === 0) return;
+
+    const known = await this.prisma.query.findMany({
+      where: { id: { in: created.map((log) => log.args.queryId.toLowerCase()) } },
+      select: { id: true },
+    });
+    const knownIds = new Set(known.map((query) => query.id));
+    for (const log of created) {
+      if (knownIds.has(log.args.queryId.toLowerCase())) continue;
+      await this.syncQuery(log.args.queryId, head, log.transactionHash, log.blockNumber);
+      this.logger.log(`Picked up query ${log.args.queryId} from unsafe block ${log.blockNumber}`);
+    }
+  }
+
+  /**
+   * Deletes queries that `indexUnsafeQueries` mirrored from blocks in this range when the safe chain
+   * no longer has them. A query re-included in another block is kept (or mirrored again later).
+   */
+  private async pruneReorgedQueries(
+    logs: ParsedLog[],
+    fromBlock: bigint,
+    toBlock: bigint,
+  ): Promise<void> {
+    const queryConsumer = this.chain.addresses.queryConsumer.toLowerCase();
+    const createdIds = logs
+      .filter(
+        (log) => log.eventName === 'QueryCreated' && log.address.toLowerCase() === queryConsumer,
+      )
+      .map((log) => (log.args as { queryId: Hex }).queryId.toLowerCase());
+    const unconfirmed = await this.prisma.query.findMany({
+      where: { blockNumber: { gte: fromBlock, lte: toBlock }, id: { notIn: createdIds } },
+      select: { id: true },
+    });
+
+    for (const { id } of unconfirmed) {
+      try {
+        await this.chain.publicClient.readContract({
+          address: this.chain.addresses.queryConsumer,
+          abi: queryConsumerAbi,
+          functionName: 'getQuery',
+          args: [id as Hex],
+          blockNumber: toBlock,
+        });
+      } catch (error) {
+        if (!isQueryNotFound(error)) throw error;
+        await this.prisma.query.delete({ where: { id } });
+        this.logger.warn(`Dropped query ${id}: its block was reorged out before the safe head`);
+      }
+    }
   }
 
   /** Indexes one block range. Returns true when the indexer is caught up with the safe head. */
@@ -150,6 +224,7 @@ export class IndexerService implements OnApplicationBootstrap, OnModuleDestroy {
     for (const log of logs) {
       await this.handleLog(log, toBlock);
     }
+    await this.pruneReorgedQueries(logs, fromBlock, toBlock);
 
     await this.prisma.indexerState.upsert({
       where: { id: CURSOR_ID },
@@ -191,6 +266,11 @@ export class IndexerService implements OnApplicationBootstrap, OnModuleDestroy {
       const queryId = args.queryId as Hex;
       if (log.eventName === 'QueryCreated') {
         await this.syncQuery(queryId, atBlock, log.transactionHash, log.blockNumber);
+        // A query mirrored early from an unsafe block may have been re-included in another one
+        await this.prisma.query.update({
+          where: { id: queryId.toLowerCase() },
+          data: { txHash: log.transactionHash, blockNumber: log.blockNumber },
+        });
       } else if (log.eventName === 'ResponseSubmitted') {
         await this.syncResponse(queryId, args.agentId as Hex, atBlock, log.transactionHash);
         await this.syncQuery(queryId, atBlock, log.transactionHash, log.blockNumber);
@@ -466,4 +546,12 @@ export class IndexerService implements OnApplicationBootstrap, OnModuleDestroy {
       data: { status: 'relayed', lastError: null },
     });
   }
+}
+
+function isQueryNotFound(error: unknown): boolean {
+  if (!(error instanceof BaseError)) return false;
+  const revert = error.walk((cause) => cause instanceof ContractFunctionRevertedError);
+  return (
+    revert instanceof ContractFunctionRevertedError && revert.data?.errorName === 'QueryNotFound'
+  );
 }
