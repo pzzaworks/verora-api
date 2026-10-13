@@ -41,6 +41,7 @@ const SETTLE_BASE_BACKOFF_MS = 15_000;
 const SETTLE_MAX_BACKOFF_MS = 10 * 60_000;
 /** How often a query with no responses and no pending dispatches is re-checked before its deadline */
 const SETTLE_WAITING_RECHECK_MS = 30_000;
+const GAS_BUFFER_PERCENT = 25n;
 
 type OracleCall =
   | { functionName: 'submitResponseFor'; args: readonly [Hex, Hex, Hex, Hex] }
@@ -345,7 +346,14 @@ export class OracleService implements OnApplicationBootstrap, OnModuleDestroy {
     const { functionName } = call;
     try {
       await this.chain.publicClient.call({ account: wallet.account, to, data });
-      const hash = await wallet.sendTransaction({ to, data });
+      const gas = await this.chain.publicClient.estimateGas({ account: wallet.account, to, data });
+      // Headroom: settling clears and creates storage, so a transaction landing between the estimate and
+      // inclusion can raise the cost (a fresh slot is ~100k gas on Sepolia). Unused gas is not charged.
+      const hash = await wallet.sendTransaction({
+        to,
+        data,
+        gas: gas + (gas * GAS_BUFFER_PERCENT) / 100n,
+      });
       const receipt = await this.chain.publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== 'success')
         throw new Error(`${functionName} transaction ${hash} reverted`);

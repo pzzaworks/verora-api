@@ -37,6 +37,7 @@ function createService(
       getBlock: () => Promise.resolve({ timestamp: BigInt(CHAIN_NOW.getTime() / 1000) }),
       readContract,
       call: callError ? vi.fn().mockRejectedValue(callError) : vi.fn().mockResolvedValue({}),
+      estimateGas: vi.fn().mockResolvedValue(100_000n),
       waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: 'success' }),
     },
     addresses: { queryConsumer: `0x${'2'.repeat(40)}` },
@@ -104,6 +105,8 @@ describe('OracleService.settleReady', () => {
     const decoded = decodeFunctionData({ abi: queryConsumerAbi, data: data as Hex });
     expect(decoded.functionName).toBe('finalizeQuery');
     expect(decoded.args).toEqual([QUERY_ID, '0xaa', [agent('a'), agent('c')]]);
+    // 25% headroom over the 100k estimate
+    expect(sendTransaction.mock.calls[0]?.[0].gas).toBe(125_000n);
   });
 
   it('treats FinalizationWindowOpen on expiry as not yet, without an error or backoff', async () => {
