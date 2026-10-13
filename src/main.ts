@@ -28,7 +28,12 @@ function packageVersion(): string {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
+  // abortOnError: false rethrows startup errors (e.g. invalid env) instead of calling process.abort(),
+  // which kills the process before an asynchronous stdout pipe (as in Docker on Linux) flushes the log
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+    abortOnError: false,
+  });
   const config = app.get<ConfigService<EnvironmentVariables, true>>(ConfigService);
   const logger = new Logger('Bootstrap');
 
