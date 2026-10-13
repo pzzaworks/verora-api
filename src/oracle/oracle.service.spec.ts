@@ -25,13 +25,15 @@ function createService(
   query: { deadline: Date; settleAttempts: number },
   responses: unknown,
   callError?: Error,
+  // QueryStatus the contract reports after the write (2 = Completed)
+  statusAfterWrite = 2,
 ) {
   const update = vi.fn((_args: QueryUpdate) => Promise.resolve({}));
   const findMany = vi.fn().mockResolvedValue([{ id: QUERY_ID, queryType: 'price', ...query }]);
-  const readContract =
-    responses instanceof Error
-      ? vi.fn().mockRejectedValue(responses)
-      : vi.fn().mockResolvedValue(responses);
+  const readContract = vi.fn(({ functionName }: { functionName: string }) => {
+    if (functionName === 'getQuery') return Promise.resolve({ status: statusAfterWrite });
+    return responses instanceof Error ? Promise.reject(responses) : Promise.resolve(responses);
+  });
   const chain = {
     publicClient: {
       getBlock: () => Promise.resolve({ timestamp: BigInt(CHAIN_NOW.getTime() / 1000) }),
@@ -130,5 +132,32 @@ describe('OracleService.settleReady', () => {
     expect(data?.settleAttempts).toBeUndefined();
     expect(data?.oracleError).toBeUndefined();
     expect(data?.nextSettleAt?.getTime()).toBe(CHAIN_NOW.getTime() + 30_000);
+  });
+});
+
+describe('OracleService settlement confirmation', () => {
+  it('does not mark a query done when "already handled" came from a node still behind', async () => {
+    // QueryNotInProgress from a lagging RPC node is taken as already settled, but the chain still shows
+    // the query in progress, so it must be re-checked instead of being marked done
+    const revert = encodeErrorResult({
+      abi: queryConsumerAbi,
+      errorName: 'QueryNotInProgress',
+      args: [QUERY_ID],
+    });
+    const callError = new BaseError('Execution reverted', {
+      cause: Object.assign(new Error('revert'), { data: revert }),
+    });
+    const { service, update, sendTransaction } = createService(
+      { deadline: new Date(CHAIN_NOW.getTime() - 1000), settleAttempts: 0 },
+      [{ agentId: `0x${'a'.repeat(64)}`, responseData: '0xaa' }],
+      callError,
+      1,
+    );
+    await service.settleReady();
+
+    expect(sendTransaction).not.toHaveBeenCalled();
+    const data = update.mock.calls[0]?.[0].data as Record<string, unknown> | undefined;
+    expect(data?.oracleState).toBeUndefined();
+    expect(data?.nextSettleAt).toBeInstanceOf(Date);
   });
 });

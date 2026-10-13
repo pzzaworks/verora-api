@@ -42,6 +42,9 @@ const SETTLE_MAX_BACKOFF_MS = 10 * 60_000;
 /** How often a query with no responses and no pending dispatches is re-checked before its deadline */
 const SETTLE_WAITING_RECHECK_MS = 30_000;
 const GAS_BUFFER_PERCENT = 25n;
+/** QueryConsumer's QueryStatus values for a closed query */
+const QUERY_STATUS_COMPLETED = 2;
+const QUERY_STATUS_FAILED = 3;
 
 type OracleCall =
   | { functionName: 'submitResponseFor'; args: readonly [Hex, Hex, Hex, Hex] }
@@ -331,11 +334,26 @@ export class OracleService implements OnApplicationBootstrap, OnModuleDestroy {
       return false;
     }
 
+    // `write` treats some reverts as "someone else already settled it", but a load-balanced RPC can
+    // simulate on a node that is a block behind (a query still Pending there reverts QueryNotInProgress).
+    // The query only counts as settled once the chain shows it closed; otherwise it is re-checked soon.
+    if (!(await this.isClosedOnChain(queryId))) return false;
+
     await this.prisma.query.update({
       where: { id: queryId },
       data: { oracleState: 'done', oracleError: null },
     });
     return true;
+  }
+
+  private async isClosedOnChain(queryId: Hex): Promise<boolean> {
+    const { status } = await this.chain.publicClient.readContract({
+      address: this.chain.addresses.queryConsumer,
+      abi: queryConsumerAbi,
+      functionName: 'getQuery',
+      args: [queryId],
+    });
+    return status === QUERY_STATUS_COMPLETED || status === QUERY_STATUS_FAILED;
   }
 
   /** Simulates first (so reverts never cost gas), then sends and waits for the receipt */
