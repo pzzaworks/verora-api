@@ -1,4 +1,12 @@
-import { createTransport, http, shouldThrow, type EIP1193RequestFn, type Transport } from 'viem';
+import {
+  BaseError,
+  createTransport,
+  http,
+  HttpRequestError,
+  shouldThrow,
+  type EIP1193RequestFn,
+  type Transport,
+} from 'viem';
 
 export interface FailoverOptions {
   /** Per-request timeout for each endpoint */
@@ -67,9 +75,14 @@ export function failover(urls: readonly string[], options: FailoverOptions): Tra
   };
 }
 
+/** Short reason for a failed endpoint, with the HTTP status when there is one (never the URL) */
 function describe(error: unknown): string {
-  if (error instanceof Error) {
-    return (error as Error & { shortMessage?: string }).shortMessage ?? error.message;
+  if (error instanceof BaseError) {
+    const http = error.walk((cause) => cause instanceof HttpRequestError);
+    const status = http instanceof HttpRequestError ? http.status : undefined;
+    if (status) return `HTTP ${status}: ${error.shortMessage}`;
+    // Network-level failures carry the cause (connection reset, DNS, TLS) in `details`
+    return error.details ? `${error.shortMessage} (${error.details})` : error.shortMessage;
   }
-  return String(error);
+  return error instanceof Error ? error.message : String(error);
 }
